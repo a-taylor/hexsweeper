@@ -1,0 +1,713 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hexsweeper</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #1a1a2e;
+      color: #e0e0e0;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+      padding: 16px;
+      user-select: none;
+    }
+
+    h1 {
+      font-size: 2rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      color: #a78bfa;
+      margin-bottom: 12px;
+      text-shadow: 0 0 20px rgba(167, 139, 250, 0.4);
+    }
+
+    #controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .diff-btn {
+      padding: 7px 18px;
+      border: 2px solid #4c1d95;
+      background: transparent;
+      color: #a78bfa;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .diff-btn:hover { background: #4c1d95; color: #fff; }
+    .diff-btn.active { background: #7c3aed; border-color: #7c3aed; color: #fff; }
+
+    #new-game-btn {
+      padding: 7px 22px;
+      background: #7c3aed;
+      border: none;
+      color: #fff;
+      border-radius: 8px;
+      font-size: 0.95rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: background 0.15s;
+      letter-spacing: 0.04em;
+    }
+    #new-game-btn:hover { background: #6d28d9; }
+
+    #hud {
+      display: flex;
+      align-items: center;
+      gap: 28px;
+      margin-bottom: 10px;
+      font-size: 1.05rem;
+      font-weight: 600;
+    }
+
+    .hud-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .hud-icon { font-size: 1.2em; }
+    .hud-val { color: #f9fafb; min-width: 2.5ch; text-align: right; }
+
+    #canvas-wrap {
+      position: relative;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    canvas {
+      display: block;
+      cursor: pointer;
+      border-radius: 12px;
+    }
+
+    #overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: rgba(10, 8, 25, 0.82);
+      border-radius: 12px;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+    #overlay.visible {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    #overlay-title {
+      font-size: 2.8rem;
+      font-weight: 800;
+      margin-bottom: 10px;
+    }
+    #overlay-title.win  { color: #34d399; text-shadow: 0 0 30px rgba(52, 211, 153, 0.5); }
+    #overlay-title.lose { color: #f87171; text-shadow: 0 0 30px rgba(248, 113, 113, 0.5); }
+
+    #overlay-sub {
+      font-size: 1rem;
+      color: #9ca3af;
+      margin-bottom: 22px;
+    }
+
+    #overlay-btn {
+      padding: 10px 32px;
+      background: #7c3aed;
+      border: none;
+      color: #fff;
+      border-radius: 10px;
+      font-size: 1rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    #overlay-btn:hover { background: #6d28d9; }
+  </style>
+</head>
+<body>
+
+<h1>HEXSWEEPER</h1>
+
+<div id="controls">
+  <button class="diff-btn" data-diff="easy">Easy</button>
+  <button class="diff-btn active" data-diff="medium">Medium</button>
+  <button class="diff-btn" data-diff="hard">Hard</button>
+  <button id="new-game-btn">New Game</button>
+</div>
+
+<div id="hud">
+  <div class="hud-item">
+    <span class="hud-icon">💣</span>
+    <span class="hud-val" id="mine-count">0</span>
+  </div>
+  <div class="hud-item">
+    <span class="hud-icon">⏱</span>
+    <span class="hud-val" id="timer">0</span>
+  </div>
+</div>
+
+<div id="canvas-wrap">
+  <canvas id="canvas"></canvas>
+  <div id="overlay">
+    <div id="overlay-title"></div>
+    <div id="overlay-sub"></div>
+    <button id="overlay-btn">Play Again</button>
+  </div>
+</div>
+
+<script>
+// =============================================================================
+// HEX GRID MATH
+// =============================================================================
+//
+// We use "offset coordinates" with a flat-top hex orientation.
+//
+// For flat-top hexes with hex radius R:
+//   width  of one hex = 2 * R
+//   height of one hex = sqrt(3) * R
+//   horizontal step   = 1.5 * R      (columns partially overlap)
+//   vertical step     = sqrt(3) * R  (rows stack flush)
+//   odd columns shift up by (sqrt(3)/2) * R
+//
+// Axial coordinates (q, r) are used internally:
+//   q = column, r = row in the axial system.
+//   The 6 neighbours of (q, r) are:
+//     (q+1, r),   (q-1, r)     — right, left
+//     (q+1, r-1), (q-1, r+1)  — upper-right, lower-left
+//     (q,   r-1), (q,   r+1)  — upper-left,  lower-right
+//
+// =============================================================================
+
+const SQRT3 = Math.sqrt(3);
+
+// Flat-top hex: corners relative to centre at radius R
+function hexCorners(cx, cy, R) {
+  const pts = [];
+  for (let i = 0; i < 6; i++) {
+    const angleDeg = 60 * i; // flat-top: 0° points right
+    const angleRad = (Math.PI / 180) * angleDeg;
+    pts.push([cx + R * Math.cos(angleRad), cy + R * Math.sin(angleRad)]);
+  }
+  return pts;
+}
+
+// Convert axial (q, r) → pixel (cx, cy) for flat-top hexes
+function axialToPixel(q, r, R) {
+  const cx = R * 1.5 * q;
+  const cy = R * SQRT3 * (r + q / 2);
+  return [cx, cy];
+}
+
+// Convert pixel → axial (fractional, then round to nearest hex)
+function pixelToAxial(px, py, R) {
+  const q = (2 / 3) * px / R;
+  const r = (-1 / 3) * px / R + (SQRT3 / 3) * py / R;
+  return axialRound(q, r);
+}
+
+// Round fractional axial coords to nearest hex
+function axialRound(q, r) {
+  const s = -q - r;
+  let rq = Math.round(q);
+  let rr = Math.round(r);
+  let rs = Math.round(s);
+  const dq = Math.abs(rq - q);
+  const dr = Math.abs(rr - r);
+  const ds = Math.abs(rs - s);
+  if (dq > dr && dq > ds) rq = -rr - rs;
+  else if (dr > ds)        rr = -rq - rs;
+  return [rq, rr];
+}
+
+// The 6 axial neighbour direction vectors
+const HEX_DIRS = [
+  [1, 0], [-1, 0],
+  [1, -1], [-1, 1],
+  [0, -1], [0, 1],
+];
+
+// =============================================================================
+// DIFFICULTY CONFIG
+// =============================================================================
+
+const DIFFICULTIES = {
+  easy:   { radius: 4, mineCount: 10 },
+  medium: { radius: 5, mineCount: 25 },
+  hard:   { radius: 6, mineCount: 50 },
+};
+
+// =============================================================================
+// GAME STATE
+// =============================================================================
+
+let difficulty = 'medium';
+let cells = {};      // key: "q,r" → cell object
+let gameState = 'idle'; // idle | playing | won | lost
+let firstClick = true;
+let timerVal = 0;
+let timerInterval = null;
+let flagCount = 0;
+let totalMines = 0;
+let gridRadius = 5;
+
+// Cell object:
+// { q, r, mine, flagged, revealed, adj }
+//   adj = number of adjacent mines (computed after mine placement)
+
+function cellKey(q, r) { return `${q},${r}`; }
+
+// Build a hex ring of radius `rad` around origin (axial)
+// Returns array of [q, r] pairs
+function hexRing(rad) {
+  if (rad === 0) return [[0, 0]];
+  const results = [];
+  // Start at (rad, 0) and walk around 6 directions
+  let q = rad, r = -rad; // starting cube direction
+  // Flat-top walk: start at (rad, 0, -rad) in cube
+  let cq = rad, cr = 0;
+  const dirs = [[-1,1],[-1,0],[0,-1],[1,-1],[1,0],[0,1]]; // axial walk dirs for ring
+  for (let side = 0; side < 6; side++) {
+    for (let step = 0; step < rad; step++) {
+      results.push([cq, cr]);
+      cq += dirs[side][0];
+      cr += dirs[side][1];
+    }
+  }
+  return results;
+}
+
+// Build all cells within hex radius `rad` of origin
+function buildGrid(rad) {
+  const c = {};
+  for (let ring = 0; ring <= rad; ring++) {
+    for (const [q, r] of hexRing(ring)) {
+      const key = cellKey(q, r);
+      c[key] = { q, r, mine: false, flagged: false, revealed: false, adj: 0 };
+    }
+  }
+  return c;
+}
+
+function getNeighbours(q, r) {
+  return HEX_DIRS.map(([dq, dr]) => cellKey(q + dq, r + dr))
+    .filter(k => k in cells);
+}
+
+function placeMines(safeQ, safeR, count) {
+  // Collect all non-safe positions
+  const safeKey = cellKey(safeQ, safeR);
+  const safeNeighbours = new Set(getNeighbours(safeQ, safeR));
+  safeNeighbours.add(safeKey);
+
+  const candidates = Object.keys(cells).filter(k => !safeNeighbours.has(k));
+
+  // Fisher-Yates shuffle, take first `count`
+  for (let i = candidates.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
+  }
+
+  const mineKeys = new Set(candidates.slice(0, count));
+  for (const k of mineKeys) cells[k].mine = true;
+
+  // Compute adjacency for each cell
+  for (const k of Object.keys(cells)) {
+    const { q, r } = cells[k];
+    cells[k].adj = getNeighbours(q, r).filter(nk => cells[nk].mine).length;
+  }
+}
+
+function floodReveal(q, r) {
+  const queue = [[q, r]];
+  const visited = new Set();
+  while (queue.length) {
+    const [cq, cr] = queue.pop();
+    const key = cellKey(cq, cr);
+    if (visited.has(key)) continue;
+    visited.add(key);
+    const cell = cells[key];
+    if (!cell || cell.flagged || cell.revealed) continue;
+    cell.revealed = true;
+    if (cell.adj === 0 && !cell.mine) {
+      for (const nk of getNeighbours(cq, cr)) {
+        if (!visited.has(nk)) {
+          const nc = cells[nk];
+          queue.push([nc.q, nc.r]);
+        }
+      }
+    }
+  }
+}
+
+function checkWin() {
+  for (const k of Object.keys(cells)) {
+    const c = cells[k];
+    if (!c.mine && !c.revealed) return false;
+  }
+  return true;
+}
+
+// =============================================================================
+// RENDERING
+// =============================================================================
+
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+
+let HEX_R = 32; // pixel radius — recalculated in resize()
+let offsetX = 0, offsetY = 0; // canvas-centre offset
+
+// Number colours (1–6)
+const NUM_COLORS = [
+  '', '#60a5fa', '#34d399', '#f87171',
+  '#c084fc', '#fb923c', '#22d3ee',
+];
+
+// Cell fill colours
+const COLOR_HIDDEN   = '#2d2b55';
+const COLOR_HIDDEN_H = '#3d3a6a'; // hover (unused, canvas doesn't easily do hover per-cell)
+const COLOR_REVEALED = '#16132e';
+const COLOR_MINE     = '#7f1d1d';
+const COLOR_BORDER   = '#1a1a40';
+const COLOR_FLAG_BG  = '#312e81';
+
+// Animation state: newly revealed cells fade in
+let revealAnims = {}; // key → { t: 0..1 } progress
+
+let hoveredKey = null; // track mouse hover for visual feedback
+
+function resize() {
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const usableW = Math.min(vw - 32, 700);
+  const usableH = Math.max(vh - 200, 300);
+
+  // Calculate max R so grid fits
+  // Grid spans roughly 2*gridRadius+1 hexes wide and tall
+  // Width: (2*gridRadius) * 1.5 * R + 2*R
+  // Height: (2*gridRadius+1) * SQRT3 * R
+  const maxByW = usableW / (1.5 * (2 * gridRadius) + 2);
+  const maxByH = usableH / (SQRT3 * (2 * gridRadius + 1));
+  HEX_R = Math.max(14, Math.floor(Math.min(maxByW, maxByH)));
+
+  const gridW = (1.5 * (2 * gridRadius) + 2) * HEX_R;
+  const gridH = SQRT3 * (2 * gridRadius + 1) * HEX_R;
+
+  canvas.width  = Math.ceil(gridW) + 4;
+  canvas.height = Math.ceil(gridH) + 4;
+
+  offsetX = canvas.width  / 2;
+  offsetY = canvas.height / 2;
+}
+
+function drawHex(q, r, fillColor, strokeColor, alpha) {
+  const [cx, cy] = axialToPixel(q, r, HEX_R);
+  const pts = hexCorners(cx + offsetX, cy + offsetY, HEX_R - 1.5);
+  ctx.globalAlpha = alpha ?? 1;
+  ctx.beginPath();
+  ctx.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+  ctx.closePath();
+  ctx.fillStyle = fillColor;
+  ctx.fill();
+  ctx.strokeStyle = strokeColor ?? COLOR_BORDER;
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+}
+
+function drawLabel(q, r, text, color, fontSize) {
+  const [cx, cy] = axialToPixel(q, r, HEX_R);
+  ctx.fillStyle = color;
+  ctx.font = `bold ${fontSize ?? Math.max(10, HEX_R * 0.55)}px 'Segoe UI', system-ui, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, cx + offsetX, cy + offsetY);
+}
+
+function render() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  const now = performance.now();
+
+  for (const k of Object.keys(cells)) {
+    const c = cells[k];
+    const isHovered = k === hoveredKey;
+
+    // Compute animation alpha for newly revealed
+    let alpha = 1;
+    if (revealAnims[k] !== undefined) {
+      revealAnims[k] = Math.min(1, revealAnims[k] + 0.08);
+      alpha = revealAnims[k];
+      if (revealAnims[k] >= 1) delete revealAnims[k];
+    }
+
+    if (!c.revealed) {
+      // Hidden cell
+      const bg = isHovered && !c.flagged
+        ? (gameState === 'playing' || gameState === 'idle') ? '#3d3a6a' : COLOR_HIDDEN
+        : COLOR_HIDDEN;
+      drawHex(c.q, c.r, bg, COLOR_BORDER);
+      if (c.flagged) {
+        drawHex(c.q, c.r, COLOR_FLAG_BG, '#6366f1');
+        drawLabel(c.q, c.r, '🚩', '#f87171', Math.max(10, HEX_R * 0.5));
+      }
+      // Show mines after loss
+      if (gameState === 'lost' && c.mine && !c.flagged) {
+        drawHex(c.q, c.r, COLOR_MINE, '#ef4444');
+        drawLabel(c.q, c.r, '💣', '#fca5a5', Math.max(10, HEX_R * 0.5));
+      }
+    } else {
+      // Revealed cell
+      if (c.mine) {
+        drawHex(c.q, c.r, '#991b1b', '#ef4444', alpha);
+        drawLabel(c.q, c.r, '💣', '#fca5a5', Math.max(10, HEX_R * 0.5));
+      } else {
+        drawHex(c.q, c.r, COLOR_REVEALED, '#252245', alpha);
+        if (c.adj > 0) {
+          drawLabel(c.q, c.r, String(c.adj), NUM_COLORS[c.adj] ?? '#e5e7eb');
+        }
+      }
+    }
+  }
+
+  if (Object.keys(revealAnims).length > 0) {
+    requestAnimationFrame(render);
+  }
+}
+
+// =============================================================================
+// GAME INIT & RESET
+// =============================================================================
+
+function newGame() {
+  const cfg = DIFFICULTIES[difficulty];
+  gridRadius = cfg.radius;
+  totalMines = cfg.mineCount;
+  flagCount = 0;
+  firstClick = true;
+  gameState = 'idle';
+  revealAnims = {};
+  hoveredKey = null;
+
+  clearInterval(timerInterval);
+  timerVal = 0;
+  updateHUD();
+  hideOverlay();
+
+  cells = buildGrid(gridRadius);
+  resize();
+  render();
+}
+
+function startTimer() {
+  timerVal = 0;
+  clearInterval(timerInterval);
+  timerInterval = setInterval(() => {
+    timerVal++;
+    document.getElementById('timer').textContent = timerVal;
+  }, 1000);
+}
+
+function updateHUD() {
+  document.getElementById('mine-count').textContent = totalMines - flagCount;
+  document.getElementById('timer').textContent = timerVal;
+}
+
+function showOverlay(won, timeSec) {
+  const overlay = document.getElementById('overlay');
+  const title   = document.getElementById('overlay-title');
+  const sub     = document.getElementById('overlay-sub');
+  title.className = won ? 'win' : 'lose';
+  title.textContent = won ? 'You Win!' : 'Boom!';
+  sub.textContent = won
+    ? `Cleared in ${timeSec}s`
+    : 'Better luck next time.';
+  overlay.classList.add('visible');
+}
+
+function hideOverlay() {
+  document.getElementById('overlay').classList.remove('visible');
+}
+
+// =============================================================================
+// INPUT HANDLING
+// =============================================================================
+
+function canvasCoords(e) {
+  const rect = canvas.getBoundingClientRect();
+  return [e.clientX - rect.left, e.clientY - rect.top];
+}
+
+function hexAtPixel(px, py) {
+  const [q, r] = pixelToAxial(px - offsetX, py - offsetY, HEX_R);
+  const key = cellKey(q, r);
+  return cells[key] ? key : null;
+}
+
+canvas.addEventListener('mousemove', e => {
+  const [px, py] = canvasCoords(e);
+  const k = hexAtPixel(px, py);
+  if (k !== hoveredKey) {
+    hoveredKey = k;
+    render();
+  }
+});
+
+canvas.addEventListener('mouseleave', () => {
+  hoveredKey = null;
+  render();
+});
+
+canvas.addEventListener('click', e => {
+  if (gameState === 'won' || gameState === 'lost') return;
+  const [px, py] = canvasCoords(e);
+  const k = hexAtPixel(px, py);
+  if (!k) return;
+
+  const cell = cells[k];
+  if (cell.flagged || cell.revealed) return;
+
+  if (firstClick) {
+    firstClick = false;
+    gameState = 'playing';
+    placeMines(cell.q, cell.r, totalMines);
+    startTimer();
+  }
+
+  if (cell.mine) {
+    cell.revealed = true;
+    gameState = 'lost';
+    clearInterval(timerInterval);
+    render();
+    setTimeout(() => showOverlay(false, timerVal), 400);
+    return;
+  }
+
+  floodReveal(cell.q, cell.r);
+
+  // Schedule fade-in for newly revealed cells
+  for (const ck of Object.keys(cells)) {
+    if (cells[ck].revealed && revealAnims[ck] === undefined) {
+      // Only animate ones that just became revealed (simple heuristic: not in anim yet and revealed)
+    }
+  }
+
+  if (checkWin()) {
+    gameState = 'won';
+    clearInterval(timerInterval);
+    render();
+    setTimeout(() => showOverlay(true, timerVal), 400);
+    return;
+  }
+
+  render();
+});
+
+canvas.addEventListener('contextmenu', e => {
+  e.preventDefault();
+  if (gameState === 'won' || gameState === 'lost') return;
+
+  const [px, py] = canvasCoords(e);
+  const k = hexAtPixel(px, py);
+  if (!k) return;
+
+  const cell = cells[k];
+  if (cell.revealed) return;
+
+  cell.flagged = !cell.flagged;
+  flagCount += cell.flagged ? 1 : -1;
+  updateHUD();
+  render();
+});
+
+// Touch: long-press to flag, tap to reveal
+let touchTimer = null;
+let touchMoved = false;
+
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  touchMoved = false;
+  const touch = e.touches[0];
+  const [px, py] = canvasCoords(touch);
+  touchTimer = setTimeout(() => {
+    if (!touchMoved) {
+      // Long press → flag
+      const k = hexAtPixel(px, py);
+      if (k) {
+        const cell = cells[k];
+        if (!cell.revealed) {
+          cell.flagged = !cell.flagged;
+          flagCount += cell.flagged ? 1 : -1;
+          updateHUD();
+          render();
+        }
+      }
+      touchTimer = null;
+    }
+  }, 400);
+}, { passive: false });
+
+canvas.addEventListener('touchmove', () => { touchMoved = true; }, { passive: true });
+
+canvas.addEventListener('touchend', e => {
+  e.preventDefault();
+  if (touchTimer !== null) {
+    clearTimeout(touchTimer);
+    touchTimer = null;
+    // Short tap → treat as left-click
+    const touch = e.changedTouches[0];
+    canvas.dispatchEvent(new MouseEvent('click', {
+      clientX: touch.clientX,
+      clientY: touch.clientY,
+    }));
+  }
+}, { passive: false });
+
+// =============================================================================
+// UI WIRING
+// =============================================================================
+
+document.querySelectorAll('.diff-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    difficulty = btn.dataset.diff;
+    document.querySelectorAll('.diff-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    newGame();
+  });
+});
+
+document.getElementById('new-game-btn').addEventListener('click', newGame);
+document.getElementById('overlay-btn').addEventListener('click', newGame);
+
+window.addEventListener('resize', () => {
+  resize();
+  render();
+});
+
+// =============================================================================
+// BOOT
+// =============================================================================
+
+newGame();
+</script>
+</body>
+</html>
